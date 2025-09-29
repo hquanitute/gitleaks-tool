@@ -1,0 +1,36 @@
+Add pre-commit configuration
+For specific repo
+Download .pre-commit-config.yaml and gitleaks.toml into root folder of repo
+Run cmd pre-commit install
+Auto-update the config to the latest repos' versions by executing
+pre-commit autoupdate
+Gitleaks scan all git repo: gitleaks git -v --log-opts="--all"
+Gitleaks scan all dir: gitleaks dir -v 
+
+For new init/clone and exist repo:
+Download this folder and open a Powershell terminal
+Set ENV
+Powershell prompt:
+[Environment]::SetEnvironmentVariable("GITLEAKS_CONFIG", "$PWD\gitleaks.toml", "Machine")
+Or use GUI windows (Environment Variables, System Properties)
+GITLEAKS_CONFIG <script location>\gitleaks.toml
+
+Generate global pre-commit hook script
+pre-commit init-templatedir "${HOME}/.git-templates" -c "$PWD\.pre-commit-config.yaml"
+
+When we have pre-commit hook script in ${HOME}/.git-templates", any new repo by init or clone will copy pre-commit hook into repo/.git/hooks/ folder
+For exist repo which does not have pre-commit hook, run this command to make git use hook in ${HOME}/.git-templates by default
+git config --global core.hooksPath "${HOME}/.git-templates/hooks"
+
+Test pre-commit + gitleaks:
+Create a test file sample.txt with sensitive data:
+secret: xxx
+
+Git add and commit
+
+For special case
++ Need add dump credential into unittest
+
++ Add whitelist
+
++ Custom gitleaks rules
