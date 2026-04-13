@@ -1,69 +1,144 @@
 # Gitleaks Configuration Guide
 
-## For Specific Repository
-1. Download required files to repository root:
-   - `.pre-commit-config.yaml`
-   - `gitleaks.toml`
+This repo contains configuration files for running [gitleaks](https://github.com/gitleaks/gitleaks) as a pre-commit hook to detect hardcoded secrets.
+
+Key files:
+- `gitleaks.toml` — gitleaks rules (based on upstream default, with custom allowlists)
+- `.pre-commit-config.yaml` — pre-commit hook config for this repo
+
+---
+
+## Per-Repository Setup
+
+1. Copy `.pre-commit-config.yaml` and `gitleaks.toml` to the repository root.
 2. Install pre-commit hooks:
-```bash
-pre-commit install
-```
-3. Update to latest versions:
-```bash
-pre-commit autoupdate
-```
+   ```bash
+   pre-commit install
+   ```
+3. Update to latest hook versions:
+   ```bash
+   pre-commit autoupdate
+   ```
 
 ### Scanning Commands
-- Scan all git repositories:
+
+Scan all commits in the git history:
 ```bash
 gitleaks git -v --log-opts="--all"
 ```
-- Scan all directories:
+
+Scan a directory (non-git):
 ```bash
 gitleaks dir -v
 ```
 
-## For Entire Repository
+---
 
-### Environment Setup
-#### Option 1: PowerShell
-```powershell
-[Environment]::SetEnvironmentVariable("GITLEAKS_CONFIG", "$PWD\gitleaks.toml", "Machine")
+## Global Setup (WSL2 / NTFS)
+
+> **WSL2 users with repos on `/mnt/c/`**: `pre-commit install` will fail with `PermissionError: [Errno 1] Operation not permitted` because the Windows NTFS filesystem does not support Python's atomic file replace operations. Use the global hook setup below instead.
+
+The solution is to store hook scripts on the Linux native filesystem and point git to them globally via `core.hooksPath`.
+
+### File Layout
+
+```
+~/.config/git/hooks/pre-commit        # global hook script
+~/.config/git/pre-commit-config.yaml  # global default pre-commit config
+~/.config/git/gitleaks.toml           # global gitleaks rules
 ```
 
-#### Option 2: Windows GUI
-1. Open System Properties
-2. Navigate to Environment Variables
-3. Add `GITLEAKS_CONFIG` with value `<script location>\gitleaks.toml`
+### Setup Steps
 
-### Global Pre-commit Hook Setup
-1. Generate template directory:
+1. Create the hooks directory on the Linux filesystem:
+   ```bash
+   mkdir -p ~/.config/git/hooks
+   ```
+
+2. Create `~/.config/git/hooks/pre-commit` with the following content and make it executable:
+   ```bash
+   #!/usr/bin/env bash
+   # Global pre-commit hook
+   # Uses repo's .pre-commit-config.yaml if present, otherwise falls back to global default
+
+   INSTALL_PYTHON=/usr/bin/python3
+   GLOBAL_CONFIG="$HOME/.config/git/pre-commit-config.yaml"
+
+   if [ -f ".pre-commit-config.yaml" ]; then
+       CONFIG=".pre-commit-config.yaml"
+   else
+       CONFIG="$GLOBAL_CONFIG"
+   fi
+
+   ARGS=(hook-impl --config="$CONFIG" --hook-type=pre-commit)
+
+   HERE="$(cd "$(dirname "$0")" && pwd)"
+   ARGS+=(--hook-dir "$HERE" -- "$@")
+
+   if [ -x "$INSTALL_PYTHON" ]; then
+       exec "$INSTALL_PYTHON" -mpre_commit "${ARGS[@]}"
+   elif command -v pre-commit > /dev/null; then
+       exec pre-commit "${ARGS[@]}"
+   else
+       echo '`pre-commit` not found.  Did you forget to activate your virtualenv?' 1>&2
+       exit 1
+   fi
+   ```
+   ```bash
+   chmod +x ~/.config/git/hooks/pre-commit
+   ```
+
+3. Create `~/.config/git/pre-commit-config.yaml` (global default config):
+   ```yaml
+   repos:
+     - repo: https://github.com/zricethezav/gitleaks
+       rev: v8.30.1
+       hooks:
+         - id: gitleaks
+           name: Detect hardcoded secrets
+           description: Detect hardcoded secrets using Gitleaks
+           entry: gitleaks git --pre-commit --redact --staged --verbose --config /home/siwan/.config/git/gitleaks.toml
+           pass_filenames: false
+   ```
+
+4. Copy gitleaks rules to the Linux filesystem:
+   ```bash
+   cp /mnt/c/Users/siwan/work/gitleaks-tool/gitleaks.toml ~/.config/git/gitleaks.toml
+   ```
+
+5. Set the global hooks path:
+   ```bash
+   git config --global core.hooksPath ~/.config/git/hooks
+   ```
+
+The hook will now run on every commit across all repositories. If a repo has its own `.pre-commit-config.yaml`, that is used; otherwise the global config applies.
+
+### Caveats
+
+- **Do not run `pre-commit install`** while `core.hooksPath` is set — it will refuse with `Cowardly refusing to install hooks with core.hooksPath set`.
+- **After `pre-commit autoupdate`**, manually sync the hook if it was regenerated in the repo:
+  ```bash
+  cp /mnt/c/Users/siwan/work/gitleaks-tool/.git/hooks/pre-commit ~/.config/git/hooks/pre-commit
+  ```
+- **After updating `gitleaks.toml`** in this repo, sync it to the global copy:
+  ```bash
+  cp /mnt/c/Users/siwan/work/gitleaks-tool/gitleaks.toml ~/.config/git/gitleaks.toml
+  ```
+
+---
+
+## Testing Pre-commit Without Committing
+
 ```bash
-pre-commit init-templatedir "${HOME}/.git-templates" -c "$PWD\.pre-commit-config.yaml"
-```
-Upon the presence of a pre-commit hook script within the ${HOME}/.git-templates directory, any newly initialized or cloned repository will automatically incorporate this pre-commit hook into its own .git/hooks/ directory.
+pre-commit run --all-files
 
-2. For existing repositories without pre-commit hooks, run this command to make git use hook in ${HOME}/.git-templates by default:
-```bash
-git config --global core.hooksPath "${HOME}/.git-templates/hooks"
+# or for a specific hook only:
+pre-commit run gitleaks --all-files
 ```
 
-## Testing Pre-commit + Gitleaks
-
-1. Create a test file `sample.txt` with sensitive data:
-```plaintext
-secret: xxx
-```
-2. Attempt to commit the changes:
-```bash
-git add .
-git commit -m "test commit"
-```
+---
 
 ## Special Cases
 
-- Adding credentials for unit tests
-- Configuring whitelists
-- Customizing gitleaks rules
-
-> **Note**: The pre-commit hook will be automatically added to new repositories created via `git init` or `git clone` when using the global template directory.
+- **Unit test credentials**: Add allowlist entries in `gitleaks.toml` under `[[allowlists]]` to whitelist specific files or patterns.
+- **Custom rules**: Add new `[[rules]]` entries in `gitleaks.toml` following the [gitleaks contributing guide](https://github.com/gitleaks/gitleaks/blob/master/CONTRIBUTING.md).
